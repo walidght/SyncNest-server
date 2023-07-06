@@ -1,0 +1,25 @@
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Nest {
+  id          String @id @default(auto()) @map("_id") @db.ObjectId
+  title       String
+  author      User   @relation(fields: [authorEmail], references: [email])
+  authorEmail String
+  driveFolder String
+}
+
+model User {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  email         String   @unique
+  name          String
+  picture       String
+  nests         Nest[]
+  refreshTokens String[]
+}
