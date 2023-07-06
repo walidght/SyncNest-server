@@ -13,7 +13,8 @@ import { getUserProfile } from './google/peopleService';
 import { z } from 'zod';
 import { uploadFile } from './driveApi';
 import { renameFile } from './filesManager';
-import { generateCookie, verifyCookie } from './cookiesManager';
+import { generateCookie, signCookie, verifyCookie } from './cookiesManager';
+import { getUser, removeRefreshToken, updateOrCreateUser } from './user';
 
 const url = getLoginUrl();
 
@@ -33,39 +34,46 @@ app.use(cookieParser());
 app.use(async (req, res, next) => {
     const access_token_cookie = req.cookies?.access_token;
     const refresh_token_cookie = req.cookies?.refresh_token;
+    const my_token_cookie = req.cookies?.my_token;
 
     try {
-        const parsedAccessToken = verifyCookie(access_token_cookie);
-        if (access_token_cookie && parsedAccessToken) {
-            res.locals.payload = parsedAccessToken;
-            res.locals.access_token = parsedAccessToken.access_token;
+        const parsedMyToken = verifyCookie(my_token_cookie);
+        if (access_token_cookie && my_token_cookie && parsedMyToken) {
+            res.locals.payload = parsedMyToken;
+            res.locals.access_token = access_token_cookie;
             res.locals.refresh_token = refresh_token_cookie;
         } else if (refresh_token_cookie) {
             // make new access token
             oauth2Client.setCredentials({
                 refresh_token: refresh_token_cookie,
             });
-            const access_token = await oauth2Client.getAccessToken();
+            const access_token_response = await oauth2Client.getAccessToken();
 
-            if (!access_token.token) throw new Error('User Unauthenticated');
+            if (!access_token_response.token)
+                throw new Error('User Unauthenticated');
 
-            const payload = { email: '', access_token: access_token.token };
+            const user = await getUser({ refreshToken: refresh_token_cookie });
 
-            const access_token_cookie = [
+            if (!user) throw new Error('Corrupted Tokens');
+
+            const payload = { email: user?.email };
+            const access_token = access_token_response.token;
+
+            const my_token_cookie = generateCookie(
+                'my_token',
+                signCookie(payload)
+            );
+
+            const access_token_cookie = generateCookie(
                 'access_token',
-                generateCookie(payload),
-                {
-                    maxAge: 3600000,
-                    httpOnly: true,
-                    sameSite: 'none',
-                    secure: true,
-                },
-            ] as const;
+                access_token
+            );
 
-            res.locals.payload = payload;
-            res.locals.access_token = access_token.token;
+            res.locals.payload = { ...user };
+            res.locals.access_token = access_token;
             res.locals.refresh_token = refresh_token_cookie;
             res.cookie(...access_token_cookie);
+            res.cookie(...my_token_cookie);
         } else {
             throw new Error('User Unauthenticated');
         }
@@ -85,7 +93,8 @@ app.use(async (req, res, next) => {
 });
 
 app.get('/api/check-auth', async (req, res) => {
-    if (res.locals.access_token) res.status(200).send({ success: true });
+    if (res.locals.access_token && res.locals.payload)
+        res.status(200).send({ success: true });
     else res.status(401).send({ success: false });
 });
 
@@ -94,30 +103,21 @@ app.get('/api/login-url', async (req: Request, res: Response) => {
 });
 
 app.get('/api/logout', async (req: Request, res: Response) => {
-    const access_token_cookie = [
-        'access_token',
-        '',
-        {
-            maxAge: 1,
-            httpOnly: true,
-            sameSite: 'none',
-            secure: true,
-        },
-    ] as const;
+    await removeRefreshToken(res.locals.refresh_token);
 
-    const refresh_token_cookie = [
-        'refresh_token',
-        '',
-        {
-            maxAge: 1,
-            httpOnly: true,
-            sameSite: 'none',
-            secure: true,
-        },
-    ] as const;
+    const refresh_token_cookie = generateCookie('refresh_token', '', {
+        maxAge: 1,
+    });
+    const access_token_cookie = generateCookie('access_token', '', {
+        maxAge: 1,
+    });
+    const my_token_cookie = generateCookie('my_token', '', {
+        maxAge: 1,
+    });
 
     res.cookie(...refresh_token_cookie)
         .cookie(...access_token_cookie)
+        .cookie(...my_token_cookie)
         .send({ success: true });
 });
 
@@ -132,38 +132,40 @@ app.get('/api/make-tokens', async (req: Request, res: Response) => {
         if (!access_token || !refresh_token)
             return res.status(401).send({ success: false });
 
+        console.log(`From Google Auth: Generated New Access & Refresh Tokens`);
+
         oauth2Client.setCredentials({ access_token });
         const userProfile = await getUserProfile(oauth2Client);
+
+        await updateOrCreateUser({
+            name: userProfile.name,
+            email: userProfile.email,
+            picture: userProfile.picture,
+            refresh_token: refresh_token,
+        });
+
         const payload = {
             email: userProfile.email,
-            access_token: access_token,
         };
 
-        const access_token_cookie = [
-            'access_token',
-            generateCookie(payload),
-            {
-                maxAge: 3600000,
-                httpOnly: true,
-                sameSite: 'none',
-                secure: true,
-            },
-        ] as const;
+        const my_token_cookie = generateCookie('my_token', signCookie(payload));
 
-        const refresh_token_cookie = [
+        const access_token_cookie = generateCookie(
+            'access_token',
+            access_token
+        );
+        const refresh_token_cookie = generateCookie(
             'refresh_token',
             refresh_token,
             {
                 maxAge: 15552000000,
-                httpOnly: true,
-                sameSite: 'none',
-                secure: true,
-            },
-        ] as const;
+            }
+        );
 
         res.cookie(...refresh_token_cookie)
             .cookie(...access_token_cookie)
-            .send({ access_token, refresh_token });
+            .cookie(...my_token_cookie)
+            .send({ success: true });
     } catch (error) {
         if (error instanceof Error) {
             console.error('An error occurred:', error.message);
@@ -179,7 +181,9 @@ app.get('/api/user', async (req: Request, res: Response) => {
         const credentials = { access_token: res.locals.access_token };
         oauth2Client.setCredentials(credentials);
 
-        const userProfile = await getUserProfile(oauth2Client);
+        const userProfile = res.locals.payload.id
+            ? res.locals.payload
+            : await getUser({ email: res.locals.payload.email });
 
         if (!userProfile)
             throw new Error('Something went wrong while getting user data');

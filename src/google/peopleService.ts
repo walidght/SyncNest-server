@@ -18,9 +18,13 @@ export const getUserProfile = async (oauth2Client: Auth.OAuth2Client) => {
         !userInfo.data.photos[0].url
     )
         throw new Error('user info is not available');
+
+    console.log(
+        `From Google People: Fetched Data Of [User ${userInfo.data.emailAddresses[0].value}]`
+    );
     return {
         name: userInfo.data.names[0].displayName,
         email: userInfo.data.emailAddresses[0].value,
-        photo: userInfo.data.photos[0].url,
+        picture: userInfo.data.photos[0].url,
     };
 };

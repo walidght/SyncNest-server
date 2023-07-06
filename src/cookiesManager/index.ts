@@ -1,11 +1,29 @@
 import jwt from 'jsonwebtoken';
 
 type Payload = {
-    access_token: string;
     email: string;
 };
 
-export const generateCookie = (payload: Payload) => {
+export const generateCookie = (
+    name: string,
+    value: string,
+    options?: { maxAge?: number }
+) => {
+    const maxAge = options?.maxAge || 3600000;
+
+    return [
+        name,
+        value,
+        {
+            maxAge: maxAge,
+            httpOnly: true,
+            sameSite: 'none',
+            secure: true,
+        },
+    ] as const;
+};
+
+export const signCookie = (payload: Payload) => {
     // TODO: get the secret from env variable instead
     const secret = 'tempsecret';
     const age = '1h';

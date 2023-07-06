@@ -21,5 +21,5 @@ model User {
   name          String
   picture       String
   nests         Nest[]
-  refreshTokens String[]
+  refreshTokens String[] @unique @default([])
 }
